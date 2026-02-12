@@ -1,4 +1,21 @@
+# Python
 __pycache__/
 *.pyc
+
+# Environment variables
 .env
 .env.*
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Testing leftovers
+pytest.ini
+.pytest_cache/
+htmlcov/
+coverage.xml
+
+# Django
+db.sqlite3

@@ -2,16 +2,17 @@ from urllib.parse import parse_qs
 
 from channels.middleware import BaseMiddleware
 from channels.db import database_sync_to_async
-from django.contrib.auth.models import AnonymousUser
 
 from rest_framework_simplejwt.tokens import UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
-from shared.models import User
-
 
 @database_sync_to_async
 def get_user(user_id):
+    # 🔥 Import INSIDE function
+    from shared.models import User
+    from django.contrib.auth.models import AnonymousUser
+
     try:
         return User.objects.get(id=user_id)
     except User.DoesNotExist:
@@ -20,10 +21,13 @@ def get_user(user_id):
 
 class JWTAuthMiddleware(BaseMiddleware):
     def __init__(self, app):
-        self.app = app
+        super().__init__(app)
 
     async def __call__(self, scope, receive, send):
         print("JWT MIDDLEWARE HIT")
+
+        # 🔥 Import INSIDE function
+        from django.contrib.auth.models import AnonymousUser
 
         scope["user"] = AnonymousUser()
 
@@ -44,5 +48,4 @@ class JWTAuthMiddleware(BaseMiddleware):
                 print("JWT ERROR:", e)
                 scope["user"] = AnonymousUser()
 
-        # ✅ PASS CONTROL TO NEXT APP
-        return await self.app(scope, receive, send)
+        return await super().__call__(scope, receive, send)
