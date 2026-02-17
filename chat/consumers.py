@@ -2,9 +2,9 @@ import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
-from chat.models import ChatMessage
+from chat.models import ChatMessage, ChatRoom
 from shared.models import User
-from chat.redis import (add_message_to_redis,get_messages_from_redis,)
+from chat.redis import add_message_to_redis, get_messages_from_redis
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -20,6 +20,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.room_name = self.scope["url_route"]["kwargs"]["room_name"]
         self.room_group_name = f"chat_{self.room_name}"
 
+        # ✅ CHECK USER IS PARTICIPANT
+        allowed = await self.is_participant(self.user_id)
+
+        if not allowed:
+            await self.close()
+            return
+
         await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
@@ -27,8 +34,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         await self.accept()
 
-        # ✅ SEND CHAT HISTORY AFTER CONNECT 
-        messages = get_messages_from_redis(self.room_name)
+        db_messages = await self.get_chat_history()
+        redis_messages = get_messages_from_redis(self.room_name)
+
+        db_ids = {m["id"] for m in db_messages}
+        merged = db_messages + [m for m in redis_messages if m["id"] not in db_ids]
+
+        messages = merged
 
         if not messages:
             messages = await self.get_chat_history()
@@ -37,6 +49,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "type": "chat_history",
             "payload": messages
         }))
+        # 🔥 mark all messages from other user as seen
+        await self.mark_room_messages_seen()
+
+        # 🔥 notify other participant
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "broadcast_message",
+                "event": {
+                    "type": "message_seen",
+                    "payload": {
+                        "room_name": self.room_name,
+                        "seen_by": self.user_id
+                    }
+                }
+            }
+        )
 
     async def disconnect(self, close_code):
         await self.channel_layer.group_discard(
@@ -68,39 +97,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
         payload = data.get("payload", {})
 
         message_id = payload.get("id")
-        receiver_id = payload.get("receiver_id")
         message = payload.get("message")
 
-        print("🔥 HANDLE CHAT MESSAGE CALLED")
-        print("🔥 ROOM:", self.room_name)
-        print("🔥 MESSAGE DATA:", message)
-
-        if not all([message_id, receiver_id, message]):
+        if not all([message_id, message]):
             print("❌ Invalid chat payload:", payload)
             return
 
         sender = await self.get_user(self.user_id)
-        receiver = await self.get_user(receiver_id)
 
         message_data = {
             "id": str(message_id),
             "room_name": self.room_name,
             "sender_id": sender.id,
-            "receiver_id": receiver.id,
+            "sender_name": sender.email,
             "message": message,
             "is_delivered": True,
             "is_seen": False,
         }
 
-        # ✅ Save to DB (permanent)
-        await self.save_message(
-            message_id,
-            sender,
-            receiver,
-            message
-        )
+        # ✅ Save to DB
+        await self.save_message(message_id, sender, message)
 
-        # ✅ Save to Redis (fast cache)  ← FIXED INDENTATION
+        # ✅ Save to Redis
         add_message_to_redis(self.room_name, message_data)
 
         # ✅ Broadcast
@@ -114,6 +132,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 }
             }
         )
+
     async def handle_typing(self, data):
         payload = data.get("payload", {})
 
@@ -125,7 +144,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "type": "typing",
                     "payload": {
                         "sender_id": self.user_id,
-                        "receiver_id": payload.get("receiver_id"),
                         "is_typing": payload.get("is_typing"),
                     }
                 }
@@ -174,12 +192,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return User.objects.get(id=user_id)
 
     @database_sync_to_async
-    def save_message(self, message_id, sender, receiver, message):
+    def save_message(self, message_id, sender, message):
         ChatMessage.objects.create(
             id=message_id,
             room_name=self.room_name,
             sender=sender,
-            receiver=receiver,
             message=message,
             is_delivered=True,
         )
@@ -199,14 +216,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         qs = (
             ChatMessage.objects
             .filter(room_name=self.room_name)
-            .order_by("timestamp")[:50]
+            .order_by("-timestamp")[:50]
         )
+
+        qs = list(reversed(qs))
 
         return [
             {
                 "id": str(m.id),
                 "sender_id": m.sender_id,
-                "receiver_id": m.receiver_id,
+                "sender_name": m.sender.email, 
                 "message": m.message,
                 "is_delivered": m.is_delivered,
                 "is_seen": m.is_seen,
@@ -214,3 +233,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }
             for m in qs
         ]
+
+    # ------------------------
+    # PARTICIPANT CHECK 🔒
+    # ------------------------
+
+    @database_sync_to_async
+    def is_participant(self, user_id):
+        return ChatRoom.objects.filter(
+            room_name=self.room_name,
+            participants__id=user_id
+        ).exists()
+    
+    @database_sync_to_async
+    def mark_room_messages_seen(self):
+        ChatMessage.objects.filter(
+            room_name=self.room_name
+        ).exclude(sender_id=self.user_id).update(is_seen=True)

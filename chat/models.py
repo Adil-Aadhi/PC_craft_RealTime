@@ -9,18 +9,12 @@ class ChatMessage(models.Model):
         editable=False
     )
 
-    room_name = models.CharField(max_length=255)
+    room_name = models.CharField(max_length=255, db_index=True)
 
     sender = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         related_name="sent_messages"
-    )
-
-    receiver = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="received_messages"
     )
 
     message = models.TextField()
@@ -32,3 +26,16 @@ class ChatMessage(models.Model):
 
     class Meta:
         ordering = ["timestamp"]
+
+class ChatRoom(models.Model):
+    id = models.UUIDField(primary_key=True)
+    room_name = models.CharField(max_length=255)
+    participants = models.ManyToManyField(User)
+
+    class Meta:
+        managed = False
+        db_table = "Worker_chatroom"
+
+
+
+
