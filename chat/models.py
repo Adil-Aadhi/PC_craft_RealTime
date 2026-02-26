@@ -18,6 +18,9 @@ class ChatMessage(models.Model):
     )
 
     message = models.TextField()
+    
+    message_type = models.CharField(max_length=20, default="text")
+    build_ids = models.JSONField(blank=True, null=True)
 
     is_delivered = models.BooleanField(default=False)
     is_seen = models.BooleanField(default=False)

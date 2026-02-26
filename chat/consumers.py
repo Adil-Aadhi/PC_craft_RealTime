@@ -40,6 +40,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         db_ids = {m["id"] for m in db_messages}
         merged = db_messages + [m for m in redis_messages if m["id"] not in db_ids]
 
+        for m in merged:
+            m.setdefault("message_type", "text")
+            m.setdefault("build_ids", None)
+
         messages = merged
 
         if not messages:
@@ -89,6 +93,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         elif event_type == "message_seen":
             await self.handle_message_seen(data)
 
+        elif event_type == "build_bundle":
+            await self.handle_build_bundle(data)
+
     # ------------------------
     # HANDLERS
     # ------------------------
@@ -111,6 +118,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "sender_id": sender.id,
             "sender_name": sender.email,
             "message": message,
+            "message_type": "text",   # ✅ add
+            "build_ids": None,
             "is_delivered": True,
             "is_seen": False,
         }
@@ -128,6 +137,47 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "type": "broadcast_message",
                 "event": {
                     "type": "chat_message",
+                    "payload": message_data
+                }
+            }
+        )
+    async def handle_build_bundle(self, data):
+        payload = data.get("payload", {})
+        message_id = payload.get("id")
+        text = payload.get("message", "")
+        build_ids = payload.get("build_ids", [])
+
+        if not message_id or not build_ids:
+            print("❌ Invalid build_bundle payload:", payload)
+            return
+
+        sender = await self.get_user(self.user_id)
+
+        message_data = {
+            "id": str(message_id),
+            "room_name": self.room_name,
+            "sender_id": sender.id,
+            "sender_name": sender.email,
+            "message": text,
+            "message_type": "build_bundle",
+            "build_ids": build_ids,
+            "is_delivered": True,
+            "is_seen": False,
+        }
+        print("📦 BUILD HANDLER HIT:", message_data)
+        # ✅ Save to DB
+        await self.save_build_bundle(message_id, sender, text, build_ids)
+
+        # ✅ Save to Redis
+        add_message_to_redis(self.room_name, message_data)
+
+        # ✅ Broadcast
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "broadcast_message",
+                "event": {
+                    "type": "build_bundle",
                     "payload": message_data
                 }
             }
@@ -200,6 +250,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
             message=message,
             is_delivered=True,
         )
+    @database_sync_to_async
+    def save_build_bundle(self, message_id, sender, text, build_ids):
+        ChatMessage.objects.create(
+            id=message_id,
+            room_name=self.room_name,
+            sender=sender,
+            message=text,
+            message_type="build_bundle",
+            build_ids=build_ids,
+            is_delivered=True,
+        )
 
     @database_sync_to_async
     def mark_delivered(self, message_id):
@@ -227,6 +288,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "sender_id": m.sender_id,
                 "sender_name": m.sender.email, 
                 "message": m.message,
+                "message_type": m.message_type,        # ✅ add
+                "build_ids": m.build_ids,
                 "is_delivered": m.is_delivered,
                 "is_seen": m.is_seen,
                 "timestamp": m.timestamp.isoformat(),
