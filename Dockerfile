@@ -13,4 +13,4 @@ EXPOSE 8001
 
 ENV DJANGO_SETTINGS_MODULE=realtime.settings
 
-CMD ["daphne", "-b", "0.0.0.0", "-p", "8001", "realtime.asgi:application"]
+CMD ["uvicorn", "realtime.asgi:application", "--host", "0.0.0.0", "--port", "8001"]

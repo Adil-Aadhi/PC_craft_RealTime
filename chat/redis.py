@@ -2,7 +2,7 @@ import redis
 import json
 import os
 
-REDIS_HOST = os.environ.get("REDIS_HOST", "host.docker.internal")
+REDIS_HOST = os.environ.get("REDIS_HOST", "redis-service")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 
 redis_client = redis.Redis(
